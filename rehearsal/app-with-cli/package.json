@@ -1,0 +1,8 @@
+{
+  "name": "rehearsal-app-with-cli",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "homey": "file:./stub-homey"
+  }
+}

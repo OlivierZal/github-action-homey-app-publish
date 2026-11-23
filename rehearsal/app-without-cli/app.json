@@ -1,0 +1,12 @@
+{
+  "id": "com.example.rehearsal",
+  "version": "1.0.0",
+  "compatibility": ">=12.0.0",
+  "sdk": 3,
+  "platforms": ["local"],
+  "name": { "en": "Rehearsal" },
+  "description": { "en": "A minimal app to rehearse the Homey CLI" },
+  "category": ["tools"],
+  "permissions": [],
+  "author": { "name": "Example", "email": "example@example.com" }
+}

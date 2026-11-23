@@ -1,0 +1,150 @@
+# Not part of any pull request: runs the two proposed changes for real,
+# on a hosted runner, without uploading anything to the Homey App Store.
+name: Rehearsal
+on:
+  push:
+    branches: [test/rehearsal]
+permissions: {}
+jobs:
+  # The unchanged action, to prove the stand-in CLI itself: the app depends
+  # on a package named `homey` that prints what the real CLI prints.
+  baseline:
+    name: upstream master, stand-in CLI
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cp -R rehearsal/app-with-cli/. .
+      - id: publish
+        uses: athombv/github-action-homey-app-publish@0642b483f1eb66fbceb0c91b73df35d45fd2f3db
+        with:
+          personal_access_token: rehearsal-not-a-token
+      - env:
+          BUILD_URL: ${{ steps.publish.outputs.build_url }}
+          URL: ${{ steps.publish.outputs.url }}
+        run: |
+          echo "url=$URL build_url=$BUILD_URL"
+          [ "$URL" = https://tools.developer.homey.app/apps/app/com.example.app ]
+          [ -z "$BUILD_URL" ]
+          [ "$(cat rehearsal-calls.log)" = 'app publish' ]
+  # Pull request A: the build_url output.
+  build-url:
+    name: build_url (${{ matrix.scenario }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [named, unnamed, failing]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cp -R rehearsal/app-with-cli/. .
+      - id: publish
+        continue-on-error: true
+        uses: OlivierZal/github-action-homey-app-publish@cdfd431e62e03675a793a81a0dd3f99b1ac76209
+        with:
+          personal_access_token: rehearsal-not-a-token
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+      - env:
+          BUILD_URL: ${{ steps.publish.outputs.build_url }}
+          OUTCOME: ${{ steps.publish.outcome }}
+          SCENARIO: ${{ matrix.scenario }}
+          URL: ${{ steps.publish.outputs.url }}
+        run: |
+          echo "outcome=$OUTCOME url=$URL build_url=$BUILD_URL"
+          app=https://tools.developer.homey.app/apps/app/com.example.app
+          case "$SCENARIO" in
+            named)
+              [ "$OUTCOME" = success ] && [ "$URL" = "$app" ] &&
+                [ "$BUILD_URL" = "$app/build/361" ]
+              ;;
+            unnamed)
+              [ "$OUTCOME" = success ] && [ "$URL" = "$app" ] &&
+                [ -z "$BUILD_URL" ]
+              ;;
+            failing)
+              [ "$OUTCOME" = failure ]
+              ;;
+          esac
+  # Pull request B, started by the runner as an action: an app that depends
+  # on a CLI of its own, which the added line must run and leave in charge.
+  install-as-action:
+    name: CLI without install scripts, as an action
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cp -R rehearsal/app-with-cli/. .
+      - id: publish
+        uses: OlivierZal/github-action-homey-app-publish@1d02af083b5efcde9a1ace799771109d4ff82a23
+        with:
+          personal_access_token: rehearsal-not-a-token
+      - env:
+          URL: ${{ steps.publish.outputs.url }}
+        run: |
+          echo "url=$URL"
+          cat rehearsal-calls.log
+          [ "$URL" = https://tools.developer.homey.app/apps/app/com.example.app ]
+          [ "$(cat rehearsal-calls.log)" = "$(printf -- '--version\napp publish')" ]
+  # Pull request B, started by hand from its image, where the output can be
+  # read: nothing is installed when the app has a CLI of its own, and the
+  # real CLI, installed by the added line, validates an app that has none.
+  install:
+    name: CLI without install scripts
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: action
+          persist-credentials: false
+          ref: 1d02af083b5efcde9a1ace799771109d4ff82a23
+      - run: docker build --tag rehearsal action
+      # An app that depends on a CLI of its own: the real entrypoint, which
+      # runs that CLI and installs nothing.
+      - name: An app with its own CLI keeps it
+        run: |
+          docker run --rm --entrypoint sh \
+            --env GITHUB_OUTPUT=/tmp/output \
+            --volume "$PWD/rehearsal/app-with-cli:/github/workspace" \
+            rehearsal -c '/entrypoint.sh rehearsal-not-a-token && cat /tmp/output' \
+            2>&1 | tee own.log
+          grep --quiet '^0.0.0 (stand-in)$' own.log
+          grep --quiet 'successfully uploaded' own.log
+          grep --quiet '^url=https://tools.developer.homey.app/apps/app/com.example.app$' own.log
+          if grep --quiet 'will be installed' own.log; then exit 1; fi
+      # An app without one: the entrypoint of the pull request with its
+      # publish command replaced by one that uploads nothing, on the real CLI.
+      - name: The real CLI, installed without scripts, validates an app
+        run: |
+          sed 's/HOMEY_PAT="$1" npx homey app publish/npx homey app validate --level debug/' \
+            action/entrypoint.sh > rehearsal-entrypoint.sh
+          [ "$(grep --count 'npx homey app validate --level debug' rehearsal-entrypoint.sh)" = 1 ]
+          if grep --quiet 'app publish' rehearsal-entrypoint.sh; then exit 1; fi
+          printf '\nnode --version\n' >> rehearsal-entrypoint.sh
+          chmod +x rehearsal-entrypoint.sh
+          cat rehearsal-entrypoint.sh
+          docker run --rm --entrypoint /rehearsal-entrypoint.sh \
+            --env GITHUB_OUTPUT=/tmp/output \
+            --volume "$PWD/rehearsal-entrypoint.sh:/rehearsal-entrypoint.sh:ro" \
+            --volume "$PWD/rehearsal/app-without-cli:/github/workspace" \
+            rehearsal 2>&1 | tee fetched.log
+          grep --quiet 'App validated successfully against level' fetched.log
+          # Installed once, and by the first call: the version that call
+          # prints comes before anything the validation prints.
+          [ "$(grep --count 'will be installed' fetched.log)" = 1 ]
+          awk '/^[0-9]+\.[0-9]+\.[0-9]+$/ && !v { v = NR } /Pre-processing app/ { p = NR } END { exit !(v && p && v < p) }' fetched.log

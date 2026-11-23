@@ -1,0 +1,7 @@
+{
+  "name": "homey",
+  "version": "0.0.0",
+  "bin": {
+    "homey": "cli.js"
+  }
+}
